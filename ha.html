@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>哈希加密器</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      max-width: 700px;
+      margin: 20px auto;
+      padding: 0 15px;
+      background: #fafafa;
+      color: #333;
+    }
+    h2 { text-align: center; color: #2c6fbb; }
+    label { display: block; margin-top: 12px; font-weight: bold; }
+    input, textarea {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      box-sizing: border-box;
+    }
+    button {
+      margin: 10px 5px;
+      padding: 8px 16px;
+      background: #2c6fbb;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover { background: #1e5aa8; }
+    .log {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 12px;
+      border-radius: 6px;
+      font-family: monospace;
+      white-space: pre-wrap;
+      height: 200px;
+      overflow-y: auto;
+      margin-top: 10px;
+    }
+    .output {
+      background: #f0f8ff;
+      padding: 12px;
+      border-left: 4px solid #2c6fbb;
+      margin-top: 10px;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+
+<h2>🔐 口令加密/解密（带详细日志）</h2>
+
+<label>🔑 口令（请牢记！）：</label>
+<input type="password" id="password" placeholder="输入你的口令（建议12位以上）">
+
+<label>📝 明文 / 密文：</label>
+<textarea id="inputData" placeholder="加密时输入明文；解密时粘贴密文"></textarea>
+
+<button onclick="encrypt()">🔐 加密</button>
+<button onclick="decrypt()">🔓 解密</button>
+
+<label>📋 执行日志：</label>
+<pre class="log" id="log"></pre>
+
+<label>📤 结果：</label>
+<div class="output" id="output">操作结果将显示在这里</div>
+
+<script>
+  // 日志函数
+  function log(msg) {
+    const logEl = document.getElementById('log');
+    const time = new Date().toLocaleTimeString();
+    logEl.textContent += `[${time}] ${msg}\n`;
+    logEl.scrollTop = logEl.scrollHeight; // 自动滚动到底部
+  }
+
+  function clearLog() {
+    document.getElementById('log').textContent = '';
+    document.getElementById('output').textContent = '操作结果将显示在这里';
+  }
+
+  // Base64 工具
+  function arrayBufferToBase64(buffer) {
+    return btoa(String.fromCharCode(...new Uint8Array(buffer)));
+  }
+  function base64ToArrayBuffer(base64) {
+    const binary = atob(base64);
+    return new Uint8Array([...binary].map(c => c.charCodeAt(0))).buffer;
+  }
+
+  // ===== 加密 =====
+  async function encrypt() {
+    clearLog();
+    log("▶ 开始加密流程...");
+
+    const password = document.getElementById('password').value;
+    const plaintext = document.getElementById('inputData').value;
+
+    if (!password) {
+      log("❌ 错误：口令不能为空！");
+      return;
+    }
+    if (!plaintext) {
+      log("❌ 错误：明文内容不能为空！");
+      return;
+    }
+
+    try {
+      log("1. 生成随机 Salt (32字节) 和 IV (12字节)...");
+      const salt = window.crypto.getRandomValues(new Uint8Array(32));
+      const iv = window.crypto.getRandomValues(new Uint8Array(12));
+
+      log("2. 使用 PBKDF2 派生密钥（60万次迭代，SHA-256）...");
+      const start = performance.now();
+      
+      const keyMaterial = await window.crypto.subtle.importKey(
+        "raw",
+        new TextEncoder().encode(password),
+        "PBKDF2",
+        false,
+        ["deriveBits"]
+      );
+      const keyBuffer = await window.crypto.subtle.deriveBits(
+        { name: "PBKDF2", salt, iterations: 600000, hash: "SHA-256" },
+        keyMaterial,
+        256
+      );
+      const key = await window.crypto.subtle.importKey(
+        "raw",
+        keyBuffer,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt"]
+      );
+      
+      const keyTime = performance.now() - start;
+      log(`   ✅ 密钥派生完成，耗时 ${keyTime.toFixed(1)} 毫秒`);
+
+      log("3. 使用 AES-GCM 加密明文...");
+      const encoder = new TextEncoder();
+      const encrypted = await window.crypto.subtle.encrypt(
+        { name: "AES-GCM", iv },
+        key,
+        encoder.encode(plaintext)
+      );
+
+      log("4. 合并 Salt + IV + 密文 并转为 Base64...");
+      const resultBuffer = new Uint8Array(salt.length + iv.length + encrypted.byteLength);
+      resultBuffer.set(salt, 0);
+      resultBuffer.set(iv, salt.length);
+      resultBuffer.set(new Uint8Array(encrypted), salt.length + iv.length);
+
+      const output = arrayBufferToBase64(resultBuffer);
+      document.getElementById('output').textContent = output;
+      log("✅ 加密成功！结果已显示在下方。");
+      log("💡 提示：请妥善保管口令，丢失将无法恢复！");
+
+    } catch (err) {
+      log(`❌ 加密失败：${err.message || err}`);
+      console.error(err);
+    }
+  }
+
+  // ===== 解密 =====
+  async function decrypt() {
+    clearLog();
+    log("▶ 开始解密流程...");
+
+    const password = document.getElementById('password').value;
+    const input = document.getElementById('inputData').value.trim();
+
+    if (!password) {
+      log("❌ 错误：口令不能为空！");
+      return;
+    }
+    if (!input) {
+      log("❌ 错误：请输入密文（Base64 格式）！");
+      return;
+    }
+
+    let dataBuffer;
+    try {
+      log("1. 尝试解析 Base64 密文...");
+      dataBuffer = base64ToArrayBuffer(input);
+    } catch (e) {
+      log("❌ 错误：密文不是有效的 Base64 格式！");
+      return;
+    }
+
+    const totalLen = dataBuffer.byteLength;
+    if (totalLen < 32 + 12 + 1) {
+      log("❌ 错误：密文太短，格式不正确！");
+      return;
+    }
+
+    try {
+      const data = new Uint8Array(dataBuffer);
+      const salt = data.slice(0, 32);
+      const iv = data.slice(32, 44);
+      const ciphertext = data.slice(44);
+
+      log("2. 使用相同参数派生密钥（PBKDF2 + SHA-256）...");
+      const start = performance.now();
+      
+      const keyMaterial = await window.crypto.subtle.importKey(
+        "raw",
+        new TextEncoder().encode(password),
+        "PBKDF2",
+        false,
+        ["deriveBits"]
+      );
+      const keyBuffer = await window.crypto.subtle.deriveBits(
+        { name: "PBKDF2", salt, iterations: 10000, hash: "SHA-256" },
+        keyMaterial,
+        256
+      );
+      const key = await window.crypto.subtle.importKey(
+        "raw",
+        keyBuffer,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["decrypt"]
+      );
+      
+      const keyTime = performance.now() - start;
+      log(`   ✅ 密钥派生完成，耗时 ${keyTime.toFixed(1)} 毫秒`);
+
+      log("3. 尝试解密...");
+      const decrypted = await window.crypto.subtle.decrypt(
+        { name: "AES-GCM", iv },
+        key,
+        ciphertext
+      );
+
+      const decoder = new TextDecoder();
+      const plaintext = decoder.decode(decrypted);
+      document.getElementById('output').textContent = plaintext;
+      log("✅ 解密成功！原文已显示在下方。");
+
+    } catch (err) {
+      if (err.name === "OperationError" || err.message?.includes("decrypt")) {
+        log("❌ 解密失败：口令错误 或 密文已被篡改！");
+      } else {
+        log(`❌ 解密异常：${err.message || err}`);
+      }
+      console.error(err);
+    }
+  }
+</script>
+
+</body>
+</html>
